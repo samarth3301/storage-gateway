@@ -1,70 +1,40 @@
-mod app;
-mod config;
-mod handlers;
-mod models;
-mod services;
-mod utils;
-
 use std::time::Instant;
 use tokio::signal;
 use tracing::{error, info};
 
-use crate::app::create_app;
-use crate::config::Config;
-use crate::services::create_app_state;
+use s3_cdn_network::app::{create_app, AppState};
+use s3_cdn_network::config::Config;
+use s3_cdn_network::telemetry;
+
+type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Load environment variables
+async fn main() -> Result<(), BoxError> {
     dotenvy::dotenv().ok();
-
-    // Initialize logging
-    utils::logger::init_logger()?;
-
-    info!("Starting S3 CDN Network server...");
+    telemetry::init_logger()?;
+    telemetry::metrics_handle();
+    tokio::spawn(telemetry::run_metrics_upkeep());
 
     let start_time = Instant::now();
-
-    // Load and validate configuration
-    let config = Config::from_env().map_err(|e| {
-        error!("Configuration error: {}", e);
-        e
-    })?;
-
-    // Create application state
-    let state = create_app_state(&config.cache, &config.database, &config.auth).await?;
-
-    // Create the application
+    let config = Config::from_env().inspect_err(|e| error!("Configuration error: {}", e))?;
+    let state = AppState::init(&config).await?;
     let app = create_app(state);
 
-    // Bind to address
     let addr = format!("{}:{}", config.server.host, config.server.port);
-    let listener = tokio::net::TcpListener::bind(&addr).await.map_err(|e| {
-        error!("Failed to bind to {}: {}", addr, e);
-        e
-    })?;
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .inspect_err(|e| error!("Failed to bind to {}: {}", addr, e))?;
+    info!("Listening on {} (startup {:?})", addr, start_time.elapsed());
 
-    info!("Server bound to {}", addr);
-    let _local_addr = listener.local_addr().map_err(|e| {
-        error!("Failed to get local address: {}", e);
-        Box::<dyn std::error::Error + Send + Sync>::from(e)
-    })?;
-    info!("Server startup completed in {:?}", start_time.elapsed());
-
-    // Start the server with graceful shutdown
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await
-        .map_err(|e| {
-            error!("Server error: {}", e);
-            Box::<dyn std::error::Error + Send + Sync>::from(e)
-        })?;
+        .inspect_err(|e| error!("Server error: {}", e))?;
 
     info!("Server shutdown complete");
     Ok(())
 }
 
-/// Handle graceful shutdown signals
 async fn shutdown_signal() {
     let ctrl_c = async {
         signal::ctrl_c()
