@@ -5,18 +5,18 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-axum = "0.7"
+axum = "0.8"
 aws-sdk-s3 = "1.0"
 dotenvy = "0.15"
 moka = { version = "0.12", features = ["future"] }
 bytes = "1.0"
-tower = { version = "0.4", features = ["limit", "util"] }
-tower-http = { version = "0.5", features = ["cors", "request-id", "util"] }
+tower = { version = "0.5", features = ["limit", "util"] }
+tower-http = { version = "0.7", features = ["cors", "request-id", "util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter", "chrono"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-thiserror = "1.0"
+thiserror = "2.0"
 mongodb = { version = "2.8", features = ["tokio-runtime"] }
 futures = "0.3.32"
 tokio-stream = "0.1"
