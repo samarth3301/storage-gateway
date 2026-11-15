@@ -1,100 +1,116 @@
 # S3 CDN Network
 
-A high-performance, distributed CDN (Content Delivery Network) service designed to bridge multiple S3-compatible buckets. This service provides a unified caching layer, reducing latency and egress costs by serving frequently accessed objects from an in-memory cache.
+A caching edge service that serves objects from multiple S3-compatible buckets (Cloudflare R2, AWS S3, MinIO, Spaces) behind one URL scheme: `/{instance}/{object-key}`.
 
-## 🚀 Features
+## Features
 
-- **Multi-Tenant S3 Support**: Connect and serve content from multiple independent S3-compatible buckets (AWS S3, MinIO, DigitalOcean Spaces, etc.).
-- **High-Performance Caching**: Powered by the `moka` cache for efficient, asynchronous in-memory object storage.
-- **Dynamic Bucket Registration**: Register new storage instances on-the-fly via a secure API.
-- **Auto-Sanitization**: Built-in security to prevent directory traversal and malicious key requests.
-- **Lightweight & Fast**: Built with Rust and Axum for maximum throughput and minimal resource footprint.
+- **Multi-bucket**: buckets are registered at runtime and stored in MongoDB; their credentials are encrypted at rest with AES-256-GCM.
+- **In-memory cache**: byte-bounded `moka` cache with TTL, plus a short-lived negative cache for 404s.
+- **HTTP semantics**: `ETag` / `If-None-Match` (304), `Range` requests (206/416), `Cache-Control`, streaming responses.
+- **Operations**: liveness/readiness probes, Prometheus metrics, JSON logs with request IDs, graceful shutdown.
+- **Delivery**: CI (fmt, clippy, unit + integration tests, `cargo audit`), container image on GHCR, tag-driven deploys.
 
-## 🛠️ Architecture
+## Layout
 
-The service acts as a transparent proxy between your users and your S3 buckets:
-1. **Request**: User requests `http://cdn.yourdomain.com/{instance-name}/{object-key}`.
-2. **Cache Check**: The CDN checks if the object is in the local memory cache.
-3. **S3 Fetch**: On a cache miss, it identifies the correct bucket credentials from MongoDB and fetches the object from S3.
-4. **Response**: The object is cached and served to the user with appropriate Cache-Control headers.
-
-## 📋 Prerequisites
-
-- Rust (latest stable)
-- MongoDB (for storing bucket credentials)
-- S3-compatible storage buckets
-
-## ⚙️ Configuration
-
-Create a `.env` file in the root directory:
-
-```env
-# Server
-SERVER_HOST=0.0.0.0
-SERVER_PORT=8080
-
-# MongoDB
-MONGODB_URI=mongodb://localhost:27017
-DATABASE_NAME=cdn_network
-
-# Security
-REGISTRATION_TOKEN=your-secure-registration-token
-
-# Cache Settings
-CACHE_MAX_CAPACITY=10000
-CACHE_TIME_TO_IDLE_SECONDS=3600
+```
+src/
+  main.rs        process entry: config, telemetry, serve, shutdown
+  lib.rs         crate root
+  app.rs         AppState, router and middleware
+  config.rs      environment configuration
+  error.rs       AppError and JSON error responses
+  models.rs      domain types
+  telemetry.rs   logging and metrics
+  handlers/      HTTP endpoints (objects, admin, health)
+  services/      MongoDB, S3 clients, caches, credential encryption
+tests/           integration tests (MongoDB + S3)
+docker/          Dockerfile and compose file
+deploy/nginx/    TLS reverse proxy configuration
+.github/         CI/CD workflow and Dependabot
 ```
 
-## 🚀 Getting Started
+## API
 
-1. **Clone and Build**:
-   ```bash
-   cargo build --release
-   ```
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/{instance}/{key}` | – | Serve an object (supports `Range`, `If-None-Match`) |
+| POST | `/buckets/register` | token | Register a bucket |
+| GET | `/buckets` | token | List registered buckets (no secrets) |
+| POST | `/reset-cache` | token | Clear object and 404 caches |
+| GET | `/health` | – | Readiness with cache stats; 503 when MongoDB is down |
+| GET | `/health/live` | – | Liveness probe |
+| GET | `/health/ready` | – | Readiness probe |
+| GET | `/metrics` | internal | Prometheus metrics (blocked at nginx) |
 
-2. **Run the Server**:
-   ```bash
-   cargo run --release
-   ```
-
-## 📡 API Reference
-
-### 1. Register a Bucket
-Register a new S3 instance that the CDN should serve.
+Token-protected endpoints expect the `X-API-Token` header.
 
 ```bash
-curl -X POST http://localhost:8080/buckets/register \
-     -H "Content-Type: application/json" \
-     -H "X-API-Token: your-secure-registration-token" \
-     -d '{
-       "name": "assets-bucket",
-       "endpoint": "https://s3.amazonaws.com",
-       "access_key": "YOUR_ACCESS_KEY",
-       "secret_key": "YOUR_SECRET_KEY",
-       "bucket_name": "production-assets",
-       "region": "us-east-1"
-     }'
+curl -X POST https://cdn.example.com/buckets/register \
+  -H "Content-Type: application/json" \
+  -H "X-API-Token: $REGISTRATION_TOKEN" \
+  -d '{
+    "name": "assets",
+    "endpoint": "https://<account>.r2.cloudflarestorage.com",
+    "access_key": "...",
+    "secret_key": "...",
+    "bucket_name": "production-assets",
+    "region": "auto",
+    "force_path_style": false
+  }'
+
+curl https://cdn.example.com/assets/images/banner.jpg
 ```
 
-### 2. Access Content
-Access any file using the instance name as the first path segment.
+Errors are JSON: `{"error": "not_found", "message": "...", "key": "...", "timestamp": 0}`.
+
+## Configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `REGISTRATION_TOKEN` | required | Admin API token |
+| `CREDENTIALS_KEY` | required | Base64 32-byte key for credential encryption (`openssl rand -base64 32`) |
+| `MONGODB_URI` | `mongodb://localhost:27017` | MongoDB connection string |
+| `MONGODB_DATABASE` | `cdn_storage` | Database name |
+| `SERVER_HOST` / `SERVER_PORT` | `0.0.0.0` / `9876` | Bind address |
+| `CACHE_MAX_MB` | `512` | Total object cache size |
+| `CACHE_MAX_OBJECT_MB` | `32` | Larger objects are streamed, not cached |
+| `CACHE_TTL_SECONDS` | `3600` | Object cache TTL |
+| `CACHE_NOT_FOUND_TTL_SECONDS` | `60` | 404 cache TTL |
+| `RUST_LOG` | `s3_cdn_network=info` | Log filter |
+| `LOG_FORMAT` | `default` | `json` for structured logs |
+
+Existing plaintext credentials are encrypted automatically on startup. Keep `CREDENTIALS_KEY` in a secret store; losing it means re-registering buckets.
+
+## Development
 
 ```bash
-# Pattern: /{instance-name}/{path/to/file}
-curl http://localhost:8080/assets-bucket/images/banner.jpg
+make setup          # create .env from .env.example
+cargo run
+make lint test
 ```
 
-### 3. Management APIs
+Integration tests run when both variables are set:
 
-- **Health Check**: `GET /health`
-- **Reset Cache**: `POST /reset-cache`
+```bash
+docker run -d -p 27017:27017 mongo:7
+docker run -d -p 9090:9090 adobe/s3mock:4.7.0
+INTEGRATION_MONGODB_URI=mongodb://localhost:27017 \
+INTEGRATION_S3_ENDPOINT=http://localhost:9090 cargo test
+```
 
-## 🛡️ Security
+## Deployment
 
-- **Registration Token**: The `/buckets/register` endpoint is protected by a static API token.
-- **Key Validation**: All object keys are sanitized to prevent directory traversal attacks.
-- **Concurrency Limit**: Built-in protection against request flooding using Tower middleware.
+1. Pushes to `main` publish `ghcr.io/samarth3301/cdn:main`; tags `vX.Y.Z` publish `X.Y.Z` and deploy.
+2. Configure the `production` environment secrets: `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`, `DEPLOY_PATH` (repo checkout on the server).
+3. On the server: `.env` from `.env.example`, `docker login ghcr.io`, then `docker compose -f docker/compose.yaml up -d`.
+4. Install `deploy/nginx/cdn.conf` into nginx's `sites-enabled` and reload.
 
-## 📄 License
+For global edge caching, put the hostname behind a CDN such as Cloudflare; this service then acts as the origin shield.
 
-This project is licensed under the MIT License.
+## Observability
+
+Key metrics: `cdn_cache_requests_total{result}`, `cdn_origin_errors_total{kind}`, `http_request_duration_seconds{method,status}`. Every response carries `X-Request-Id`, which also appears in logs.
+
+## License
+
+MIT

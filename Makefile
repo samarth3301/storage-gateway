@@ -1,11 +1,7 @@
-# Makefile for CDN TechSolace
-
-# Variables
-BINARY_NAME=cdn-techsolace
 CARGO=cargo
-DOCKER_COMPOSE=docker-compose -f docker/compose.yaml
+DOCKER_COMPOSE=docker compose -f docker/compose.yaml
 
-.PHONY: all help build release run dev test clean fmt lint check setup docker-up docker-down docker-build
+.PHONY: all help build release run dev test clean fmt lint check setup docker-up docker-down docker-build docker-logs prod
 
 all: help
 
@@ -41,13 +37,13 @@ clean: ## Clean the build directory
 fmt: ## Format the code
 	$(CARGO) fmt
 
-lint: ## Run clippy for linting
-	$(CARGO) clippy -- -D warnings
+lint: ## Run fmt check and clippy
+	$(CARGO) fmt --all -- --check
+	$(CARGO) clippy --all-targets -- -D warnings
 
 check: ## Run cargo check
 	$(CARGO) check
 
-# Docker Targets
 docker-build: ## Build docker images
 	$(DOCKER_COMPOSE) build
 
@@ -60,5 +56,4 @@ docker-down: ## Stop docker containers
 docker-logs: ## View docker logs
 	$(DOCKER_COMPOSE) logs -f
 
-# Production Deployment (Alias for docker-up)
 prod: docker-up ## Run the project in production mode (Docker)

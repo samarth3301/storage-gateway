@@ -1,8 +1,5 @@
 /target
-
-
 .env
-
-tmp
-
-.omc
+tmp/
+.omc/
+.DS_Store

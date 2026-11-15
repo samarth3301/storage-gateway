@@ -1,7 +1,6 @@
-version: '3.8'
-
 services:
   s3-cdn-network:
+    image: ghcr.io/samarth3301/cdn:${IMAGE_TAG:-main}
     build:
       context: ..
       dockerfile: docker/Dockerfile
@@ -10,16 +9,20 @@ services:
     env_file:
       - ../.env
     restart: unless-stopped
+    stop_grace_period: 30s
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9876/health"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:9876/health/live"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
-      start_period: 40s
-    networks:
-      - cdn
-
-networks:
-  cdn:
-    driver: bridge
-
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
